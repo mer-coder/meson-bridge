@@ -4,14 +4,12 @@
 
 ## 功能特性
 
-- 获取跨链转账费用和最大/最小金额限制
+- 获取跨链转账费用
 - 编码和签名跨链交易
 - 提交跨链交易
 - 查询跨链交易状态
 - 生成必要的 ERC20 代币授权交易
-- 智能检查已有授权额度，避免重复授权
 - 支持多种代币(MBTC, MERL)和多条链
-- 支持在不同链上指定代币地址
 
 ## 安装
 
@@ -71,7 +69,7 @@ func main() {
 3. (可选)授权跨链桥合约使用你的代币
    ```go
    // 检查并授权Merlin链上的MBTC
-   txData, err, alreadyApproved := bridge.GetApproveData(
+   txData, err := bridge.GetApproveData(
        context.Background(),
        "0xYourAddress",
        meson.ChainMerlin,   // 指定链
@@ -79,9 +77,7 @@ func main() {
        ""                   // 可选，自定义代币地址
    )
    
-   if alreadyApproved {
-       fmt.Println("已经有足够授权，无需再次approve")
-   } else if err != nil {
+   if err != nil {
        fmt.Printf("获取授权数据失败: %v\n", err)
    } else {
        // 发送授权交易
