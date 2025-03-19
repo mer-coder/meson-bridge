@@ -10,10 +10,9 @@ type PriceRequest struct {
 
 // PriceResponse 跨链费用响应
 type PriceResponse struct {
-	Fee           string `json:"fee"`
-	EstimatedTime int    `json:"estimatedTime"`
-	MinAmount     string `json:"minAmount"`
-	MaxAmount     string `json:"maxAmount"`
+	ServiceFee string `json:"serviceFee"`
+	LpFee      string `json:"lpFee"`
+	TotalFee   string `json:"totalFee"`
 }
 
 // SwapEncodeRequest 编码跨链交易请求

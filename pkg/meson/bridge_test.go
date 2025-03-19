@@ -12,7 +12,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
@@ -71,10 +70,6 @@ func TestBridge_Bridge(t *testing.T) {
 		t.Skip("请设置RPC_URL和PRIVATE_KEY环境变量")
 	}
 
-	// 准备基础数据
-	client, err := ethclient.Dial(rpcURL)
-	require.NoError(t, err)
-	defer client.Close()
 
 	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(privateKeyHex, "0x"))
 	require.NoError(t, err)
@@ -82,22 +77,24 @@ func TestBridge_Bridge(t *testing.T) {
 	fromAddr := crypto.PubkeyToAddress(*publicKey).Hex()
 	toAddr := fromAddr
 
-	chainID, err := client.ChainID(context.Background())
-	require.NoError(t, err)
-
+	
 	// 初始化Bridge
 	bridge := NewBridge()
 
+	bridge.InitEthClient(rpcURL, ChainMerlin)
 	// 1. 获取approve数据并发送approve交易
-	approveTxData, err := bridge.GetApproveData()
+	approveTxData, err := bridge.GetApproveData(context.Background(), fromAddr, ChainMerlin, TokenMERL, "")
 	require.NoError(t, err)
 
-	approveHash, err := helpers.SendTransaction(client, chainID, privateKey, approveTxData)
+	chainID, err := bridge.ethClient.ChainID(context.Background())
+	require.NoError(t, err)
+
+	approveHash, err := helpers.SendTransaction(bridge.ethClient, chainID, privateKey, approveTxData)
 	require.NoError(t, err)
 	t.Logf("Approve tx hash: %s", approveHash)
 
 	// 2. 获取待签名消息
-	amount := decimal.NewFromFloat(0.00006)
+	amount := decimal.NewFromFloat(6)
 	resp, err := bridge.BridgeMBTC(context.Background(), amount, fromAddr, toAddr, ChainMerlin, "bnb", TokenMERL, TokenMERL)
 	require.NoError(t, err)
 	require.NotEmpty(t, resp)
@@ -115,7 +112,7 @@ func TestBridge_Bridge(t *testing.T) {
 	t.Logf("Swap ID: %s", swapId)
 
 	// 5. 持续查询并打印状态
-	for i := 0; i < 5; i++ {
+	for i := 0; ; i++ {
 		status, err := bridge.GetSwapStatus(swapId)
 		require.NoError(t, err)
 		require.NotNil(t, status)

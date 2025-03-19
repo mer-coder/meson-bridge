@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -18,6 +19,32 @@ import (
 	"github.com/mer-coder/meson-bridge/pkg/meson"
 )
 
+// 定义代币名称到ID的映射
+var tokenNameToID = map[string]int64{
+	"mbtc": 67,
+	"btc":  67, // 别名
+	"merl": 69,
+}
+
+// 将代币名称或ID字符串转换为代币ID
+func resolveTokenID(tokenStr string) (int64, error) {
+	// 尝试将字符串转换为小写
+	tokenStrLower := strings.ToLower(tokenStr)
+
+	// 检查是否在名称映射中
+	if tokenID, exists := tokenNameToID[tokenStrLower]; exists {
+		return tokenID, nil
+	}
+
+	// 尝试作为数字解析
+	tokenID, err := strconv.ParseInt(tokenStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("无法解析代币 '%s'，既不是有效的代币名称也不是有效的ID", tokenStr)
+	}
+
+	return tokenID, nil
+}
+
 func main() {
 	// 命令行参数
 	rpcURL := flag.String("rpc", "", "以太坊RPC URL")
@@ -26,13 +53,39 @@ func main() {
 	fromChain := flag.String("from-chain", string(meson.ChainMerlin), "源链")
 	toChain := flag.String("to-chain", string(meson.ChainZksync), "目标链")
 	recipient := flag.String("recipient", "", "接收地址(默认与发送地址相同)")
+	tokenStr := flag.String("token", "", "代币ID或名称 (如 'merl' 或 '69')")
+	tokenAddress := flag.String("token-address", "", "源链上代币地址(优先于token参数)")
+	poolAddress := flag.String("pool-address", "", "源链上池合约地址")
+	skipApprove := flag.Bool("skip-approve", false, "跳过approve步骤")
 	flag.Parse()
 
 	// 检查必要参数
-	if *rpcURL == "" || *privateKeyHex == "" {
+	if *rpcURL == "" || *privateKeyHex == "" || *amount == "" || *tokenStr == "" || *fromChain == "" || *toChain == "" {
+		fmt.Println("缺少必要参数")
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	// 解析代币ID
+	tokenID, err := resolveTokenID(*tokenStr)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 获取代币名称（用于显示）
+	tokenName := "Unknown"
+	for name, id := range tokenNameToID {
+		if id == tokenID {
+			tokenName = strings.ToUpper(name)
+			break
+		}
+	}
+	if tokenName == "Unknown" {
+		tokenName = fmt.Sprintf("Token(%d)", tokenID)
+	}
+
+	fmt.Printf("使用代币: %s (ID: %d)\n", tokenName, tokenID)
 
 	// 准备私钥
 	privKey := *privateKeyHex
@@ -77,20 +130,59 @@ func main() {
 
 	// 初始化Bridge
 	bridge := meson.NewBridge()
+	sourceChain := meson.Chain(*fromChain)
+	err = bridge.InitEthClient(*rpcURL, sourceChain)
+	if err != nil {
+		log.Printf("警告: 以太坊客户端初始化失败: %v", err)
+		log.Println("将使用基本模式，无法检查授权状态")
+	}
+
+	// 确定使用的代币
+	selectedToken := meson.Token(strconv.FormatInt(tokenID, 10))
+	if selectedToken == "" {
+		selectedToken = meson.TokenMBTC
+	}
+
+	// 注册自定义代币地址(如果提供)
+	if *tokenAddress != "" {
+		if err := bridge.RegisterTokenAddress(sourceChain, selectedToken, *tokenAddress); err != nil {
+			log.Fatalf("注册代币地址失败: %v", err)
+		}
+		fmt.Printf("使用自定义代币地址: %s (在%s链上)\n", *tokenAddress, sourceChain)
+	} else {
+		// 显示使用的预设代币类型
+		fmt.Printf("使用代币: %s\n", tokenName)
+	}
+
+	// 注册自定义池地址(如果提供)
+	if *poolAddress != "" {
+		if err := bridge.RegisterPoolAddress(sourceChain, *poolAddress); err != nil {
+			log.Fatalf("注册池地址失败: %v", err)
+		}
+		fmt.Printf("使用自定义池地址: %s (在%s链上)\n", *poolAddress, sourceChain)
+	}
 
 	// 1. 获取approve数据并发送approve交易
-	fmt.Println("====== 步骤1: 批准合约使用代币 ======")
-	approveTxData, err := bridge.GetApproveData()
-	if err != nil {
-		log.Fatalf("获取Approve数据失败: %v", err)
-	}
+	if !*skipApprove {
+		fmt.Println("====== 步骤1: 批准合约使用代币 ======")
 
-	approveHash, err := helpers.SendTransaction(client, chainID, privateKey, approveTxData)
-	if err != nil {
-		log.Fatalf("发送Approve交易失败: %v", err)
+		ctx := context.Background()
+		approveTxData, err := bridge.GetApproveData(ctx, fromAddr, sourceChain, selectedToken, *tokenAddress)
+
+		if err != nil {
+			log.Printf("警告: 获取Approve数据失败: %v", err)
+			log.Println("跳过approve步骤。如果您尚未授权代币使用，跨链可能会失败")
+		} else {
+			// 发送approve交易
+			approveHash, err := helpers.SendTransaction(client, chainID, privateKey, approveTxData)
+			if err != nil {
+				log.Fatalf("发送Approve交易失败: %v", err)
+			}
+			fmt.Printf("Approve交易已发送, 哈希: %s\n", approveHash)
+		}
+	} else {
+		fmt.Println("用户选择跳过approve步骤")
 	}
-	fmt.Printf("Approve交易已发送, 哈希: %s\n", approveHash)
-	fmt.Println("请等待交易确认...")
 
 	// 2. 获取待签名消息
 	fmt.Println("\n====== 步骤2: 准备跨链交易 ======")
@@ -99,20 +191,14 @@ func main() {
 		amountDecimal,
 		fromAddr,
 		toAddr,
-		meson.Chain(*fromChain),
+		sourceChain,
 		meson.Chain(*toChain),
-		meson.TokenMBTC,
-		meson.TokenMBTC,
+		selectedToken,
+		selectedToken,
 	)
 	if err != nil {
 		log.Fatalf("准备跨链交易失败: %v", err)
 	}
-
-	fmt.Printf("获取到跨链报价:\n")
-	fmt.Printf("- 费用: %s\n", resp.PriceInfo.Fee)
-	fmt.Printf("- 预计时间: %d秒\n", resp.PriceInfo.EstimatedTime)
-	fmt.Printf("- 最小金额: %s\n", resp.PriceInfo.MinAmount)
-	fmt.Printf("- 最大金额: %s\n", resp.PriceInfo.MaxAmount)
 
 	// 3. 签名消息
 	fmt.Println("\n====== 步骤3: 签名交易 ======")
